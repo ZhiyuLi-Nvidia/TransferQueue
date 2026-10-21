@@ -1310,6 +1310,46 @@ class TestFieldMetaIntegration:
         assert field_meta.global_indexes == {0, 1}
         assert field_meta.per_sample_shapes == {}
 
+    def test_clear_data_readers_see_same_shapes_whether_or_not_nested_field_collapsed(self):
+        """A field that was once nested must serve the same shapes as one that never was, at every clear."""
+        import numpy as np
+
+        from transfer_queue.metadata import BatchMeta
+
+        n = 40
+        once_nested = self._make_partition()
+        always_regular = self._make_partition()
+        for partition in (once_nested, always_regular):
+            partition.update_production_status(
+                global_indices=list(range(n - 1)),
+                field_names=["f"],
+                field_schema={"f": {"dtype": "torch.float32", "shape": (256,)}},
+            )
+        once_nested.update_production_status(
+            global_indices=[n - 1],
+            field_names=["f"],
+            field_schema={"f": {"dtype": "torch.float32", "shape": (128,)}},
+        )
+
+        def served(partition, indexes):
+            schema = partition.get_field_schema(["f"], indexes)
+            meta = BatchMeta(
+                global_indexes=indexes,
+                partition_ids=[partition.partition_id] * len(indexes),
+                field_schema=schema,
+                production_status=np.ones(len(indexes), dtype=np.int8),
+            )
+            return schema["f"]["dtype"], meta.get_shapes("f")
+
+        once_nested.clear_data([n - 1], clear_consumption=False)
+        remaining = list(range(n - 1))
+        while remaining:
+            assert served(once_nested, remaining) == served(always_regular, remaining)
+            cleared, remaining = remaining[:4], remaining[4:]
+            once_nested.clear_data(cleared, clear_consumption=False)
+            always_regular.clear_data(cleared, clear_consumption=False)
+        assert once_nested.field_metadata == always_regular.field_metadata == {}
+
     def test_update_production_status_updates_field_metadata(self):
         """Test that update_production_status correctly updates field_metadata via _update_field_metadata."""
         partition = self._make_partition()

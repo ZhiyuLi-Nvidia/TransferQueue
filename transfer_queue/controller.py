@@ -208,6 +208,7 @@ class FieldMeta:
     is_non_tensor: bool | None = None
 
     per_sample_shapes: dict[int, tuple] = field(default_factory=dict)  # {global_idx: shape}
+    removed_since_scan: int = 0
 
     # TODO: FieldMeta needs to be refactored to prevent these complicated and fragile logics
     def update(self, incoming: dict[str, Any], incoming_global_indexes: list[int]) -> None:
@@ -280,9 +281,11 @@ class FieldMeta:
 
     def remove_samples(self, indexes: list[int]):
         """Remove sample-level data for the given indexes."""
+        before = len(self.global_indexes)
         for idx in indexes:
             self.per_sample_shapes.pop(idx, None)
             self.global_indexes.discard(idx)
+        self.removed_since_scan += before - len(self.global_indexes)
 
         # After removing samples, check if we can update is_nested and shape
         if len(self.global_indexes) == 0:
@@ -293,7 +296,9 @@ class FieldMeta:
             self.dtype = None
             self.per_sample_shapes.clear()
         else:
-            if self.is_nested:
+            # Scanning every remaining shape is O(live), so only rescan after an eighth of them is gone.
+            if self.is_nested and self.removed_since_scan * 8 >= len(self.global_indexes):
+                self.removed_since_scan = 0
                 # Check if all remaining shapes are the same
                 remaining_shapes = set(
                     tuple(shape) if isinstance(shape, list) else shape for shape in self.per_sample_shapes.values()
